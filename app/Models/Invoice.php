@@ -15,7 +15,15 @@ class Invoice extends Model
     
     protected $fillable = [
         'order_id',
-        'invoice_number'
+        'invoice_number',
+        'issued_date', // TAMBAHAN: tanggal terbit invoice
+        'due_date' // TAMBAHAN: tanggal jatuh tempo
+    ];
+    
+    // TAMBAHAN: Cast untuk date fields
+    protected $casts = [
+        'issued_date' => 'date',
+        'due_date' => 'date'
     ];
     
     // Relationship dengan Order
@@ -48,7 +56,7 @@ class Invoice extends Model
         return sprintf('INV-%04d-%02d-%04d', $year, $month, $nextNumber);
     }
     
-    // Boot method untuk auto-generate invoice number
+    // Boot method untuk auto-generate invoice number dan set dates
     protected static function boot()
     {
         parent::boot();
@@ -57,6 +65,16 @@ class Invoice extends Model
             if (empty($invoice->invoice_number)) {
                 $invoice->invoice_number = self::generateInvoiceNumber();
             }
+            
+            // TAMBAHAN: Set issued_date otomatis jika belum ada
+            if (empty($invoice->issued_date)) {
+                $invoice->issued_date = Carbon::now()->toDateString();
+            }
+            
+            // TAMBAHAN: Set due_date 30 hari dari issued_date jika belum ada (opsional)
+            // if (empty($invoice->due_date)) {
+            //     $invoice->due_date = Carbon::parse($invoice->issued_date)->addDays(30)->toDateString();
+            // }
         });
     }
     
@@ -78,6 +96,21 @@ class Invoice extends Model
         return $query->where('invoice_number', 'like', "%{$invoiceNumber}%");
     }
     
+    // TAMBAHAN: Scope untuk filter berdasarkan tanggal
+    public function scopeByDateRange($query, $startDate, $endDate)
+    {
+        return $query->whereBetween('issued_date', [$startDate, $endDate]);
+    }
+    
+    // TAMBAHAN: Scope untuk invoice yang sudah jatuh tempo
+    public function scopeOverdue($query)
+    {
+        return $query->where('due_date', '<', Carbon::now()->toDateString())
+                    ->whereHas('order', function($q) {
+                        $q->where('payment_status', '!=', 'paid');
+                    });
+    }
+    
     // Method untuk mendapatkan invoice dengan format yang lebih lengkap
     public function getFormattedInvoiceAttribute()
     {
@@ -86,7 +119,21 @@ class Invoice extends Model
             'order_id' => $this->order_id,
             'customer_name' => $this->user->name ?? 'N/A',
             'total_amount' => $this->total_amount,
+            'issued_date' => $this->issued_date ? $this->issued_date->format('d/m/Y') : null, // UBAH: gunakan issued_date
+            'due_date' => $this->due_date ? $this->due_date->format('d/m/Y') : null, // TAMBAHAN: due_date
             'created_at' => $this->created_at->format('d/m/Y H:i'),
         ];
+    }
+    
+    // TAMBAHAN: Method untuk cek apakah invoice sudah jatuh tempo
+    public function isOverdue()
+    {
+        if (!$this->due_date) {
+            return false;
+        }
+        
+        return $this->due_date->isPast() && 
+               $this->order && 
+               $this->order->payment_status !== 'paid';
     }
 }
