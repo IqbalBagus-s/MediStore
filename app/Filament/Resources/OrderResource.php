@@ -47,6 +47,12 @@ class OrderResource extends Resource
                     ->searchable()
                     ->sortable(),
                 
+                // Total Amount
+                TextColumn::make('total_amount')
+                    ->label('Total Harga')
+                    ->money('IDR')
+                    ->sortable(),
+                
                 // Tipe Order
                 TextColumn::make('order_type')
                     ->label('Tipe Order')
@@ -78,6 +84,25 @@ class OrderResource extends Resource
                     ->color(fn ($state) => match($state) {
                         'cash_on_delivery' => 'warning',
                         'online_payment' => 'success',
+                        default => 'gray'
+                    }),
+                
+                // Status Pembayaran
+                TextColumn::make('payment_status')
+                    ->label('Status Pembayaran')
+                    ->formatStateUsing(function ($state) {
+                        return match($state) {
+                            'pending' => 'Menunggu Pembayaran',
+                            'paid' => 'Sudah Dibayar',
+                            'canceled' => 'Dibatalkan',
+                            default => $state
+                        };
+                    })
+                    ->badge()
+                    ->color(fn ($state) => match($state) {
+                        'pending' => 'warning',
+                        'paid' => 'success',
+                        'canceled' => 'danger',
                         default => 'gray'
                     }),
                 
@@ -142,14 +167,34 @@ class OrderResource extends Resource
                         'kirim_paket' => 'Kirim Paket',
                     ])
                     ->placeholder('Semua Tipe'),
+                    
+                Tables\Filters\SelectFilter::make('payment_status')
+                    ->label('Status Pembayaran')
+                    ->options([
+                        'pending' => 'Menunggu Pembayaran',
+                        'paid' => 'Sudah Dibayar',
+                        'canceled' => 'Dibatalkan',
+                    ])
+                    ->placeholder('Semua Status Pembayaran'),
+                    
+                Tables\Filters\SelectFilter::make('payment_method')
+                    ->label('Metode Pembayaran')
+                    ->options([
+                        'cash_on_delivery' => 'Cash On Delivery',
+                        'online_payment' => 'Online Payment',
+                    ])
+                    ->placeholder('Semua Metode'),
             ])
             ->actions([
-                // Tombol Setujui
+                // Tombol Setujui - hanya untuk order dengan payment_status = 'paid' dan status = 'menunggu_persetujuan'
                 Action::make('approve')
                     ->label('Setujui')
                     ->icon('heroicon-o-check-circle')
                     ->color('success')
-                    ->visible(fn ($record) => $record->status === 'menunggu_persetujuan')
+                    ->visible(fn ($record) => 
+                        $record->status === 'menunggu_persetujuan' && 
+                        $record->payment_status === 'paid'
+                    )
                     ->requiresConfirmation()
                     ->modalHeading('Setujui Order')
                     ->modalDescription('Apakah Anda yakin ingin menyetujui order ini?')
@@ -164,7 +209,7 @@ class OrderResource extends Resource
                             ->send();
                     }),
                 
-                // Tombol Tolak
+                // Tombol Tolak - hanya untuk order dengan status = 'menunggu_persetujuan'
                 Action::make('reject')
                     ->label('Tolak')
                     ->icon('heroicon-o-x-circle')
@@ -175,7 +220,10 @@ class OrderResource extends Resource
                     ->modalDescription('Apakah Anda yakin ingin menolak order ini?')
                     ->modalSubmitActionLabel('Ya, Tolak')
                     ->action(function ($record) {
-                        $record->update(['status' => 'ditolak']);
+                        $record->update([
+                            'status' => 'ditolak',
+                            'payment_status' => 'canceled'
+                        ]);
                         
                         Notification::make()
                             ->title('Order Ditolak')
@@ -228,32 +276,50 @@ class OrderResource extends Resource
                             ->success()
                             ->send();
                     }),
+                
+                // Tombol untuk menampilkan pesan jika belum dibayar
+                Action::make('payment_pending')
+                    ->label('Menunggu Pembayaran')
+                    ->icon('heroicon-o-exclamation-triangle')
+                    ->color('warning')
+                    ->disabled()
+                    ->visible(fn ($record) => 
+                        $record->status === 'menunggu_persetujuan' && 
+                        $record->payment_status === 'pending'
+                    ),
             ])
             ->bulkActions([
-                // Hapus bulk actions atau buat minimal
                 Tables\Actions\BulkActionGroup::make([
-                    // Bulk action untuk approve multiple orders
+                    // Bulk action untuk approve multiple orders (hanya yang sudah paid)
                     Tables\Actions\BulkAction::make('bulk_approve')
                         ->label('Setujui Terpilih')
                         ->icon('heroicon-o-check-circle')
                         ->color('success')
                         ->requiresConfirmation()
                         ->modalHeading('Setujui Orders Terpilih')
-                        ->modalDescription('Apakah Anda yakin ingin menyetujui semua order yang dipilih?')
+                        ->modalDescription('Apakah Anda yakin ingin menyetujui semua order yang dipilih? (Hanya order yang sudah dibayar yang akan disetujui)')
                         ->action(function ($records) {
                             $count = 0;
                             foreach ($records as $record) {
-                                if ($record->status === 'menunggu_persetujuan') {
+                                if ($record->status === 'menunggu_persetujuan' && $record->payment_status === 'paid') {
                                     $record->update(['status' => 'disetujui']);
                                     $count++;
                                 }
                             }
                             
-                            Notification::make()
-                                ->title('Orders Disetujui')
-                                ->body("{$count} order berhasil disetujui.")
-                                ->success()
-                                ->send();
+                            if ($count > 0) {
+                                Notification::make()
+                                    ->title('Orders Disetujui')
+                                    ->body("{$count} order yang sudah dibayar berhasil disetujui.")
+                                    ->success()
+                                    ->send();
+                            } else {
+                                Notification::make()
+                                    ->title('Tidak Ada Order yang Disetujui')
+                                    ->body('Tidak ada order yang memenuhi syarat untuk disetujui (harus sudah dibayar).')
+                                    ->warning()
+                                    ->send();
+                            }
                         }),
                 ]),
             ])
@@ -298,17 +364,29 @@ class OrderResource extends Resource
     // Menambahkan badge notifikasi pada navigation menu
     public static function getNavigationBadge(): ?string
     {
-        $count = static::getModel()::whereNotIn('status', ['selesai'])->count();
+        $count = static::getModel()::where('status', 'menunggu_persetujuan')
+                                   ->where('payment_status', 'paid')
+                                   ->count();
         return $count > 0 ? (string) $count : null;
     }
     
     // Warna badge notification
     public static function getNavigationBadgeColor(): ?string
     {
-        $pendingCount = static::getModel()::where('status', 'menunggu_persetujuan')->count();
+        $paidPendingCount = static::getModel()::where('status', 'menunggu_persetujuan')
+                                               ->where('payment_status', 'paid')
+                                               ->count();
         
-        if ($pendingCount > 0) {
-            return 'warning'; // Kuning jika ada yang menunggu persetujuan
+        if ($paidPendingCount > 0) {
+            return 'success'; // Hijau jika ada yang sudah dibayar menunggu persetujuan
+        }
+        
+        $pendingPaymentCount = static::getModel()::where('status', 'menunggu_persetujuan')
+                                                 ->where('payment_status', 'pending')
+                                                 ->count();
+        
+        if ($pendingPaymentCount > 0) {
+            return 'warning'; // Kuning jika ada yang menunggu pembayaran
         }
         
         $activeCount = static::getModel()::whereIn('status', ['disetujui', 'dikirim'])->count();
@@ -317,6 +395,6 @@ class OrderResource extends Resource
             return 'info'; // Biru jika ada yang aktif/dikirim
         }
         
-        return 'success'; // Hijau jika tidak ada yang pending
+        return null; // Tidak tampilkan badge jika tidak ada yang pending
     }
 }
