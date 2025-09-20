@@ -15,12 +15,15 @@ return new class extends Migration
             $table->id('invoice_id'); // PK dengan Auto Increment
             $table->foreignId('order_id')->constrained('orders', 'order_id')->onDelete('cascade');
             $table->string('invoice_number')->unique(); // Format: INV-2025-0001
+            $table->date('issued_date');
+            $table->date('due_date')->nullable();
             $table->timestamps(); // created_at & updated_at
             $table->softDeletes(); // deleted_at untuk soft delete
             
             // Index untuk optimasi query
             $table->index('order_id');
             $table->index('invoice_number');
+            $table->index('issued_date');
         });
     }
 

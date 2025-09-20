@@ -18,6 +18,15 @@ return new class extends Migration
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
             $table->enum('role', ['admin', 'customer'])->default('admin');
+            
+            // Atribut tambahan untuk customer (nullable karena admin tidak perlu)
+            $table->date('date_of_birth')->nullable();
+            $table->enum('gender', ['male', 'female', 'others'])->default('others')->nullable();
+            $table->text('address')->nullable();
+            $table->string('city')->nullable();
+            $table->string('contact_no')->nullable();
+            $table->string('paypal_id')->unique()->nullable();
+            
             $table->rememberToken();
             $table->timestamps();
         });
